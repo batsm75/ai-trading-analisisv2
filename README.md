@@ -1,184 +1,238 @@
 # AI Trading Terminal
 
-Aplikasi analisis trading berbasis **terminal** (Termux / Linux / macOS / Windows) yang mengambil data market langsung dari **TwelveData** dan **SoSoValue**, lalu dianalisis oleh AI:
+CLI tool analisis trading berbasis AI yang berjalan di terminal (Termux / Linux / macOS / Windows).
+Mengambil data market langsung dari **TwelveData** dan **SoSoValue** via API key, lalu menganalisis
+pola chart secara otomatis dengan **Gemini 2.5 Flash** sebagai otak utama. Jika API key Gemini
+kena limit/quota habis, otomatis beralih ke **GPT-4o via Deatcode** sebagai cadangan.
 
-- **DeepSeek** → otak & analisis utama
-- **Gemini 2.5 Flash** → pembaca chart pattern otomatis (mendukung API key format baru `AQ.xxxxx`)
-- **Deatcode (GPT-4o)** → fallback otomatis jika Gemini kena rate limit / quota habis ([console.deatcode.com](https://console.deatcode.com/))
-
-Semua API key disimpan di file **`.env`** (tidak pernah di-commit ke GitHub).
-
----
-
-## Daftar Isi
-
-1. [Fitur](#fitur)
-2. [Tech Stack](#tech-stack)
-3. [Struktur Folder](#struktur-folder)
-4. [Instalasi di Termux](#instalasi-di-termux)
-5. [Setup API Key](#setup-api-key)
-6. [Cara Pakai (Menu Utama)](#cara-pakai-menu-utama)
-7. [Upload ke GitHub & Clone](#upload-ke-github--clone)
-8. [Pengujian](#pengujian)
-9. [Catatan Keamanan & Disclaimer](#catatan-keamanan--disclaimer)
-10. [Troubleshooting](#troubleshooting)
+> ⚠️ **Disclaimer**: Alat ini hanya untuk edukasi & bantuan analisis. Bukan saran investasi.
+> Selalu kelola risiko Anda sendiri.
 
 ---
 
-## Fitur
+## A. Ringkasan Proyek
 
-- **Menu 1 — Analisis**: input simbol & timeframe, tampilkan indikator teknis (SMA, RSI, ATR, support/resistance), analisis AI lengkap (sentimen, struktur market, zone kritis, chart pattern, setup trade dengan entry/SL/TP sesuai risk:reward). Ada tombol **Refresh** dan **Kembali ke Menu Utama**.
-- **Menu 2 — Pengaturan Trade**: atur **Risk:Reward** dan pilih **metode analisis** dengan mengetik nomor `1-5`:
-  1. SND (Supply & Demand)
-  2. SNR (Support & Resistance)
-  3. SMC (Smart Money Concepts)
-  4. ICT (Inner Circle Trader)
-  5. Session Killzone
-- **Menu 3 — Env**: edit & simpan API key + URL untuk DeepSeek, Gemini, Deatcode, TwelveData, dan SoSoValue. Nilai ditampilkan tersamar. Ada tombol **Save** dan **Kembali ke Menu Utama**.
-- **Fallback otomatis**: jika Gemini mengembalikan `429 / quota habis`, analisis chart pattern otomatis dialihkan ke Deatcode (GPT-4o).
-- Pengaturan trade dipersistensikan ke `trading_settings.json`.
+| Komponen | Peran |
+|---|---|
+| TwelveData | Data market utama (forex, saham, crypto, indeks, komoditas) |
+| SoSoValue | Data market crypto tambahan (header `x-soso-api-key`) |
+| Gemini 2.5 Flash | Otak analisis utama — membaca pola chart dari OHLC |
+| Deatcode (gpt-5-mini / dll) | Cadangan otomatis saat Gemini limit (OpenAI-compatible) |
+| `.env` | Penyimpanan semua API key (tidak pernah ter-commit) |
 
-## Tech Stack
+**Fitur utama:**
+1. **Analisis** — input simbol & timeframe, analisis lengkap (bias, pola chart, level, entry/SL/TP sesuai RR), tombol **Refresh** & **Kembali**.
+2. **Pengaturan Trade** — set Risk:Reward + pilih metode analisis (1=SND, 2=SNR, 3=SMC, 4=ICT, 5=SESSION KILLZONE).
+3. **Env** — edit & simpan API key/URL (Gemini, Deatcode, TwelveData, SoSoValue) langsung dari menu, plus tombol **[t] Tes koneksi** untuk memverifikasi setiap provider.
 
-| Komponen | Teknologi | Alasan |
-|---|---|---|
-| Bahasa | Python 3.8+ | Kompatibel penuh dengan Termux (Android) |
-| UI Terminal | `rich` | Tabel/panel berwarna, rapi di layar kecil |
-| HTTP | `requests` | Pemanggilan REST API yang simpel & andal |
-| Env | `python-dotenv` | Manajemen API key via `.env` |
-| Testing | `pytest` | Unit test logika lokal |
-| Data market | TwelveData + SoSoValue | OHLC time series + data tambahan |
-| AI | DeepSeek (utama), Gemini 2.5 Flash (chart), Deatcode GPT-4o (fallback) | Rantai redundansi |
+---
 
-## Struktur Folder
+## B. Tech Stack
+
+- **Python 3.9+** — jalan native di Termux tanpa emulasi.
+- `requests` — HTTP client ke semua API.
+- `python-dotenv` — memuat `.env`.
+- `rich` — tampilan terminal berwarna, tabel, panel.
+- Tanpa database — pengaturan disimpan di `storage/config.json` (JSON file).
+
+Pilihan ini sengaja minimal agar instalasi di Termux cepat dan tidak gagal karena dependency native.
+
+---
+
+## C. Arsitektur
+
+```
+┌──────────────┐   ambil OHLC   ┌─────────────────┐
+│  Menu 1      │ ─────────────► │ TwelveData API  │
+│  Analisis    │                └─────────────────┘
+│              │   ambil klines ┌─────────────────┐
+│              │ ─────────────► │ SoSoValue API   │
+└──────┬───────┘                └─────────────────┘
+       │ rangkum OHLC + metode + RR
+       ▼
+┌──────────────────────────┐  utama  ┌──────────────────────┐
+│ services/ai_analyzer.py  │ ──────► │ Gemini 2.5 Flash     │
+│ (fallback otomatis)      │         │ generateContent      │
+│                          │ limit?  └──────────────────────┘
+│                          │ ────────┐
+└──────────────────────────┘         ▼  cadangan
+                          ┌──────────────────────┐
+                          │ GPT-4o via Deatcode  │
+                          │ /chat/completions    │
+                          └──────────────────────┘
+```
+
+---
+
+## D. Struktur Folder
 
 ```
 ai-trading-terminal/
-├── main.py                  # Entry point (python main.py)
+├── run.py                  # entry point: python run.py
 ├── requirements.txt
-├── .env.example             # Template API key — salin jadi .env
-├── .gitignore               # .env TIDAK ikut ter-commit
+├── .env.example            # template (di-commit)
+├── .env                    # API key asli (TIDAK di-commit — ada di .gitignore)
+├── .gitignore
+├── setup_termux.sh         # setup one-command untuk Termux
 ├── README.md
 ├── config/
-│   ├── __init__.py
-│   └── settings.py          # Memuat semua env var + reload()
+│   └── settings.py         # load .env, reload, daftar field env
 ├── core/
-│   ├── __init__.py
-│   ├── menu.py              # Menu utama + menu trade settings + menu env
-│   ├── analysis.py          # Alur analisis (refresh / kembali)
-│   └── trade_settings.py    # Persistensi R:R & metode analisis
+│   ├── menu.py             # menu utama + loop
+│   ├── analysis.py         # submenu 1: alur analisis + prompt
+│   ├── trade_settings.py   # submenu 2: RR + metode (config.json)
+│   ├── env_manager.py      # submenu 3: edit & simpan .env
+│   └── ui.py               # helper rich, daftar metode, input
 ├── services/
-│   ├── __init__.py
-│   ├── market_data.py       # TwelveData + SoSoValue + indikator lokal
-│   └── ai_analyzer.py       # DeepSeek + Gemini + Deatcode fallback
-├── utils/
-│   ├── __init__.py
-│   ├── env_manager.py       # Baca/tulis .env (aman, nilai tersamar)
-│   └── helpers.py           # Input aman, validasi simbol/timeframe
+│   ├── market_data.py      # fetch TwelveData + SoSoValue (paralel)
+│   └── ai_analyzer.py      # Gemini utama -> Deatcode fallback
+├── storage/
+│   └── config.json         # pengaturan trade (dibuat otomatis)
 └── tests/
-    ├── __init__.py
-    └── test_basic.py        # Unit test (tanpa koneksi internet)
+    └── test_smoke.py
 ```
 
 ---
 
-## Instalasi di Termux
+## E. Instalasi
+
+### Di Termux (Android)
 
 ```bash
-# 1. Buka Termux, update paket
-pkg update && pkg upgrade -y
+# 1. Install Termux dari F-Droid (versi Play Store sudah usang).
+# 2. Buka Termux, lalu:
+pkg update && pkg install -y python git
 
-# 2. Install Python & Git
-pkg install python git -y
-
-# 3. Clone repo (ganti dengan username/repo Anda)
+# 3. Clone repo (ganti URL dengan repo GitHub Anda):
 git clone https://github.com/USERNAME/ai-trading-terminal.git
 cd ai-trading-terminal
 
-# 4. (Opsional tapi disarankan) virtual environment
-python -m venv venv
-source venv/bin/activate
-
-# 5. Install dependensi
+# 4. Install dependency:
 pip install -r requirements.txt
 
-# 6. Salin template env
+# 5. Salin template env (jika belum ada):
 cp .env.example .env
 
-# 7. Jalankan
-python main.py
+# 6. Jalankan:
+python run.py
 ```
 
-> Di Linux/macOS/Windows langkahnya sama (sesuaikan `pkg` dengan package manager Anda).
+Atau jalankan `bash setup_termux.sh` untuk langkah 2–5 sekaligus.
 
-## Setup API Key
-
-Edit `.env` secara manual **atau** jalankan aplikasi lalu pilih **Menu 3 (Env)** untuk mengisi lewat terminal.
-
-| Layanan | Dapatkan di | Format key |
-|---|---|---|
-| DeepSeek | https://platform.deepseek.com/api_keys | `sk_...` |
-| Gemini | https://aistudio.google.com/apikey | **`AQ.xxxxx`** (format baru) — tetap pakai endpoint yang sama, aplikasi sudah mendukungnya |
-| Deatcode | https://console.deatcode.com/ | `dc_live_...` (fallback GPT-4o) |
-| TwelveData | https://twelvedata.com/register | string acak |
-| SoSoValue | dashboard SoSoValue Anda | string acak |
-
-> Jika salah satu key kosong, aplikasi tetap jalan dengan sumber yang tersedia dan menampilkan peringatan — tidak crash.
-
-## Cara Pakai (Menu Utama)
-
-```
- 1 — Analisis          (input simbol & timeframe → analisis AI → [R]efresh / [M]enu)
- 2 — Pengaturan Trade  (R:R + pilih metode 1-5: SND/SNR/SMC/ICT/Killzone)
- 3 — Env               (edit API key → [S]impan / [M]enu)
- 0 — Keluar
-```
-
-Contoh simbol: `EUR/USD`, `GBP/USD`, `XAU/USD`, `BTC/USD`, `AAPL`.
-Timeframe yang valid: `1min, 5min, 15min, 30min, 1h, 4h, 1day` (alias `m15`, `h4`, `1d` juga diterima).
-
-## Upload ke GitHub & Clone
+### Di Linux / macOS / Windows
 
 ```bash
-# Di folder proyek lokal:
+git clone https://github.com/USERNAME/ai-trading-terminal.git
 cd ai-trading-terminal
-git init
-git add .
-git commit -m "Initial commit: AI Trading Terminal"
-git branch -M main
-# Buat repo kosong di GitHub (jangan centang README), lalu:
+python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+cp .env.example .env
+python run.py
+```
+
+---
+
+## F. Upload ke GitHub (untuk pertama kali)
+
+Repo ini sudah di-inisialisasi git dengan commit awal. Cukup:
+
+```bash
+cd ai-trading-terminal
 git remote add origin https://github.com/USERNAME/ai-trading-terminal.git
+git branch -M main
 git push -u origin main
 ```
 
-Clone di perangkat lain / Termux:
-```bash
-git clone https://github.com/USERNAME/ai-trading-terminal.git
+File `.env` **tidak akan ter-upload** karena sudah masuk `.gitignore`.
+Yang ter-upload hanya `.env.example` (placeholder).
+
+---
+
+## G. Konfigurasi API Key
+
+Buka aplikasi → pilih **`3. Env`**, lalu isi field berikut (atau edit langsung file `.env`):
+
+| Field | Keterangan | Dapatkan di |
+|---|---|---|
+| `GEMINI_API_KEY` | Format baru `AQ.xxxxx` atau lama `AIza...` — keduanya didukung. | https://aistudio.google.com/app/apikey |
+| `GEMINI_MODEL` | Default `gemini-2.5-flash`. | — |
+| `DEATCODE_API_KEY` | Format `dc_live_...`. Sudah diisi di `.env` lokal Anda. | https://console.deatcode.com/ |
+| `DEATCODE_MODEL` | Default `gpt-5-mini`. **`gpt-4o` tidak tersedia** di Deatcode. Alternatif: `gpt-5.4`, `gpt-5.5`, `gpt-6-luna`, `deepseek-flash`, `gemini-2.5-pro`, `claude-sonnet-4.5`. Lihat daftar lengkap via menu `3. Env → [t] Tes koneksi`. | — |
+| `DEATCODE_BASE_URL` | **Terkonfirmasi** `https://api.deatcode.com/v1` (OpenAI-compatible). | — |
+
+> ℹ️ **Hasil tes nyata**: base URL & endpoint Deatcode sudah benar, key valid. Namun akun membutuhkan **saldo kredit** (HTTP 402 "model terkunci") agar chat completion berjalan — top-up di console.deatcode.com. Tanpa kredit, fallback tidak akan menghasilkan analisis (pesan error akan tampil jelas).
+| `TWELVEDATA_API_KEY` | Wajib agar ada data market. | https://twelvedata.com/ (paket gratis) |
+| `SOSOVALUE_API_KEY` | Opsional (data crypto tambahan). | https://sosovalue.com/developer |
+
+**Fallback otomatis:** Jika Gemini mengembalikan HTTP 429 / `RESOURCE_EXHAUSTED` / koneksi gagal,
+aplikasi mencetak peringatan dan langsung mengalihkan semua analisis berikutnya ke GPT-4o via Deatcode
+untuk sisa sesi.
+
+---
+
+## H. Penggunaan Menu
+
+```
+1. Analisis
+   → Masukkan simbol (BTC/USD, EUR/USD, AAPL, XAU/USD, ...)
+   → Pilih timeframe (1min, 5min, 15min, 30min, 1h, 2h, 4h, 1day, 1week)
+   → Data diambil, AI menganalisis, hasil ditampilkan lengkap.
+   → [R] Refresh | [U] Ubah instrumen | [B] Kembali ke menu utama
+
+2. Pengaturan Trade
+   → Risk:Reward (contoh: 1:2, 1:3)
+   → Pilih metode analisis dengan mengetik nomor:
+      1 = SND (Supply & Demand)
+      2 = SNR (Support & Resistance)
+      3 = SMC (Smart Money Concepts)
+      4 = ICT (Inner Circle Trader)
+      5 = SESSION KILLZONE
+   → [S] Simpan & kembali
+
+3. Env
+   → Lihat semua field (key di-mask), edit semua atau satu per satu.
+   → [t] Tes koneksi semua provider (Gemini, Deatcode, TwelveData, SoSoValue) — pakai endpoint gratis.
+   → [S] Simpan → konfigurasi langsung dimuat ulang.
+   → [B] Kembali
 ```
 
-**Penting:** `.gitignore` sudah mengecualikan `.env` dan `trading_settings.json`, jadi API key Anda **tidak akan** ter-upload. Setelah clone, jalankan `cp .env.example .env` dan isi key Anda (atau lewat Menu 3).
+---
 
-## Pengujian
+## I. Pengujian
 
 ```bash
-pip install pytest
-pytest -v
+python tests/test_smoke.py
+# atau:
+python -m pytest tests/ -v
 ```
 
-Tes mencakup: validasi simbol/timeframe, perhitungan indikator (SMA/RSI/ATR/support-resistance), save/load pengaturan trade, kelengkapan 5 metode analisis, dan pembangunan prompt. Tes ini **tidak** membutuhkan API key atau koneksi internet.
+Smoke test memverifikasi: semua modul bisa di-import, mapping nomor metode benar,
+perhitungan ringkasan OHLC benar, dan tulis-baca `.env` berfungsi.
 
-## Catatan Keamanan & Disclaimer
+**Yang belum diuji otomatis:** koneksi API nyata (membutuhkan key valid & jaringan).
+Uji manual: jalankan `python run.py`, pastikan key terisi, lalu coba menu `1. Analisis`.
 
-- Semua secret hanya ada di `.env` — tidak ada hardcoded key di kode.
-- `.env` masuk `.gitignore`. Verifikasi dengan `git status` sebelum push.
-- Aplikasi ini **alat bantu analisis**, bukan saran finansial dan **bukan jaminan profit**. Selalu kelola risiko Anda sendiri. Trading forex/kripto/saham memiliki risiko tinggi.
+---
 
-## Troubleshooting
+## J. Status Proyek
 
-| Gejala | Solusi |
-|---|---|
-| `ModuleNotFoundError` | Jalankan `pip install -r requirements.txt` di folder proyek |
-| TwelveData error `api_limit` | Upgrade plan TwelveData atau tunggu reset kuota harian |
-| Gemini `429 / quota` | Otomatis fallback ke Deatcode — pastikan `DEATCODE_API_KEY` terisi |
-| SoSoValue "endpoint tidak cocok" | Sesuaikan `SOSOVALUE_BASE_URL` di `.env` dengan dokumentasi API Anda |
-| Termux lambat | Pakai `CANDLE_LIMIT=50` di `.env` untuk mengurangi data |
+**Selesai:**
+- ✅ Menu utama 1/2/3 + tombol kembali di setiap submenu
+- ✅ Ambil data market paralel TwelveData + SoSoValue (degradasi graceful jika satu gagal)
+- ✅ Analisis AI dengan Gemini 2.5 Flash (mendukung key format `AQ.xxxxx`)
+- ✅ Fallback otomatis ke GPT-4o via Deatcode saat Gemini limit
+- ✅ Pengaturan RR + 5 metode analisis (pilih nomor 1–5), persist ke `config.json`
+- ✅ Editor `.env` in-app (masking, simpan, reload langsung)
+- ✅ Tombol **Tes Koneksi** tiap provider (endpoint gratis, tanpa bakar kredit)
+- ✅ `.env` di-gitignore + `.env.example` disertakan
+- ✅ Setup script Termux + smoke test
+- ✅ Base URL Deatcode & model name **diverifikasi langsung via API nyata**
+
+**Catatan / yang bisa disesuaikan:**
+- Endpoint kline SoSoValue dibuat toleran terhadap beberapa pola path karena dokumentasi
+  versi API dapat berubah. Jika gagal, ubah `SOSOVALUE_KLINE_PATH` di `.env` sesuai docs terbaru.
+- `DEATCODE_BASE_URL` default `https://api.deatcode.com/v1` — verifikasi dari dashboard
+  https://console.deatcode.com/ dan ubah bila berbeda (formatnya OpenAI-compatible).
+
+**Langkah berikutnya (opsional):** tambahkan riwayat analisis, alert harga, integrasi
+webhook ke broker, atau multi-timeframe confirmation.
